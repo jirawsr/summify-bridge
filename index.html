@@ -196,6 +196,13 @@
   var finalBlob = null;
   var finalUrl = null;
 
+  // ตัวดักสัญญาณเสียงดิบ สำหรับสร้างท่อน WAV ส่งไปถอดเสียง
+  var pcmNode = null;
+  var pcmBuffer = [];
+  var pcmFilled = 0;
+  var pcmRate = 48000;
+  var pcmTarget = 0;
+
   var el = function (id) { return document.getElementById(id); };
 
   // ---------- handshake ----------
@@ -342,11 +349,32 @@
     return '';
   }
 
-  function setupMeter(s) {
+  /**
+   * ตั้งค่าการประมวลผลเสียง — ทำสองอย่างจากสตรีมเดียวกัน
+   *
+   *   1. มิเตอร์แสดงระดับเสียง (analyser)
+   *   2. ดักสัญญาณเสียงดิบเพื่อสร้างท่อน WAV ส่งไปถอดเสียง
+   *
+   * ทำไมต้องดักสัญญาณดิบเอง แทนที่จะใช้ท่อนจาก MediaRecorder:
+   *
+   *   Gemini รับไฟล์เสียงแค่ wav, mp3, aiff, aac, ogg, flac เท่านั้น
+   *   แต่ MediaRecorder ของ Chrome ผลิต webm/opus ซึ่งไม่อยู่ในรายการ
+   *   ส่งไปเท่าไหร่ก็ถูกปฏิเสธหมด
+   *
+   *   อีกปัญหาคือท่อนจาก MediaRecorder ไม่สมบูรณ์ในตัวเอง
+   *   มีเฉพาะท่อนแรกที่มีส่วนหัวไฟล์ ท่อนที่ 2 เป็นต้นไปถอดรหัสเดี่ยวๆ ไม่ได้
+   *
+   *   การดักสัญญาณดิบแก้ทั้งสองข้อพร้อมกัน — ได้ WAV ที่สมบูรณ์ทุกท่อน
+   *   ส่วน MediaRecorder ยังทำงานคู่ขนานไปเพื่ออัดไฟล์ webm สำหรับดาวน์โหลด
+   *   ซึ่งไม่เคยถูกส่งไปให้ Gemini จึงไม่มีปัญหาเรื่องรูปแบบ
+   */
+  function setupAudioProcessing(s) {
     try {
       var ctx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
       audioCtx = ctx;
       var src = ctx.createMediaStreamSource(s);
+
+      // ---- มิเตอร์ ----
       analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
@@ -356,11 +384,151 @@
         analyser.getByteFrequencyData(buf);
         var sum = 0;
         for (var i = 0; i < buf.length; i++) sum += buf[i];
-        var level = Math.min(100, (sum / buf.length) * 2.2);
-        el('meterBar').style.width = level + '%';
+        el('meterBar').style.width = Math.min(100, (sum / buf.length) * 2.2) + '%';
         requestAnimationFrame(tick);
       })();
-    } catch (e) { /* มิเตอร์ไม่ขึ้นก็ไม่เป็นไร */ }
+
+      // ---- ตัวดักสัญญาณดิบ ----
+      var BUF = 4096;
+      pcmNode = ctx.createScriptProcessor(BUF, 1, 1);
+      pcmRate = ctx.sampleRate;                       // ปกติ 48000
+      pcmTarget = Math.round(pcmRate * (CHUNK_MS / 1000));
+      pcmBuffer = [];
+      pcmFilled = 0;
+
+      pcmNode.onaudioprocess = function (ev) {
+        if (paused) return;
+        var input = ev.inputBuffer.getChannelData(0);
+        // ต้องคัดลอกออกมา เพราะ buffer เดิมถูกใช้ซ้ำในรอบถัดไป
+        var copy = new Float32Array(input.length);
+        copy.set(input);
+        pcmBuffer.push(copy);
+        pcmFilled += copy.length;
+
+        if (pcmFilled >= pcmTarget) flushPcmChunk();
+      };
+
+      src.connect(pcmNode);
+
+      // ScriptProcessor จะไม่ทำงานถ้าไม่ได้ต่อไปยังปลายทาง
+      // แต่ต่อตรงๆ จะได้ยินเสียงย้อนกลับ จึงต่อผ่าน gain 0 เพื่อให้เงียบสนิท
+      var mute = ctx.createGain();
+      mute.gain.value = 0;
+      pcmNode.connect(mute);
+      mute.connect(ctx.destination);
+
+    } catch (e) {
+      showError('ตั้งค่าการประมวลผลเสียงไม่สำเร็จ: ' + (e.message || e));
+    }
+  }
+
+  /** รวมบัฟเฟอร์ที่สะสมไว้ แปลงเป็น WAV 16 kHz แล้วส่งให้แอป */
+  function flushPcmChunk() {
+    if (!pcmBuffer.length) return;
+
+    // รวมเป็นก้อนเดียว
+    var merged = new Float32Array(pcmFilled);
+    var off = 0;
+    for (var i = 0; i < pcmBuffer.length; i++) {
+      merged.set(pcmBuffer[i], off);
+      off += pcmBuffer[i].length;
+    }
+    pcmBuffer = [];
+    pcmFilled = 0;
+
+    // ข้ามท่อนที่เงียบสนิท เพื่อไม่ให้เปลืองโควตา Gemini
+    if (isSilent(merged)) return;
+
+    var down = downsampleTo16k(merged, pcmRate);
+    var wav = encodeWav16k(down);
+    var b64 = arrayBufferToBase64(wav);
+
+    chunkCount++;
+    el('statChunks').textContent = 'ส่งแล้ว ' + chunkCount + ' ท่อน';
+
+    post({
+      type: 'summify-bridge-chunk',
+      seq: chunkCount,
+      mimeType: 'audio/wav',
+      dataUrl: 'data:audio/wav;base64,' + b64,
+      durationMs: CHUNK_MS,
+      source: 'pcm',
+      // แนบสถานะการอัดมาด้วย เพราะไฟล์เสียงอยู่ในหน้าต่างนี้ ไม่ได้อยู่ที่แอป
+      // แอปจึงต้องอาศัยตัวเลขจากที่นี่ในการแสดงเวลาและขนาด
+      recBytes: recBytes,
+      recSec: Math.round(recElapsedMs() / 1000)
+    });
+  }
+
+  /** ตรวจว่าท่อนนี้เงียบทั้งท่อนหรือไม่ */
+  function isSilent(f32) {
+    var sum = 0, step = Math.max(1, Math.floor(f32.length / 2000)), n = 0;
+    for (var i = 0; i < f32.length; i += step) { sum += f32[i] * f32[i]; n++; }
+    return Math.sqrt(sum / n) < 0.005;
+  }
+
+  /**
+   * ลดอัตราสุ่มลงเหลือ 16 kHz
+   * เสียงพูดมีพลังงานต่ำกว่า 8 kHz อยู่แล้ว 16 kHz จึงเพียงพอ
+   * และทำให้ไฟล์เล็กลงสามเท่าเมื่อเทียบกับ 48 kHz
+   */
+  function downsampleTo16k(input, inRate) {
+    var outRate = 16000;
+    if (inRate === outRate) return input;
+
+    var ratio = inRate / outRate;
+    var outLen = Math.floor(input.length / ratio);
+    var out = new Float32Array(outLen);
+
+    for (var i = 0; i < outLen; i++) {
+      var start = Math.floor(i * ratio);
+      var end = Math.min(Math.floor((i + 1) * ratio), input.length);
+      // เฉลี่ยช่วงที่ยุบ ช่วยลดสัญญาณรบกวนจากการลดอัตราสุ่ม
+      var sum = 0, n = 0;
+      for (var j = start; j < end; j++) { sum += input[j]; n++; }
+      out[i] = n ? (sum / n) : 0;
+    }
+    return out;
+  }
+
+  /** สร้างไฟล์ WAV 16 kHz โมโน 16-bit พร้อมส่วนหัว */
+  function encodeWav16k(f32) {
+    var rate = 16000;
+    var len = f32.length;
+    var ab = new ArrayBuffer(44 + len * 2);
+    var v = new DataView(ab);
+    var w = function (o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+
+    w(0, 'RIFF');
+    v.setUint32(4, 36 + len * 2, true);
+    w(8, 'WAVE');
+    w(12, 'fmt ');
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);          // PCM
+    v.setUint16(22, 1, true);          // โมโน
+    v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true);   // byte rate
+    v.setUint16(32, 2, true);          // block align
+    v.setUint16(34, 16, true);         // bits
+    w(36, 'data');
+    v.setUint32(40, len * 2, true);
+
+    var o = 44;
+    for (var i = 0; i < len; i++) {
+      var s = Math.max(-1, Math.min(1, f32[i]));
+      v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      o += 2;
+    }
+    return ab;
+  }
+
+  function arrayBufferToBase64(ab) {
+    var bytes = new Uint8Array(ab);
+    var CH = 0x8000, parts = [];
+    for (var i = 0; i < bytes.length; i += CH) {
+      parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CH)));
+    }
+    return btoa(parts.join(''));
   }
 
   async function start(mode) {
@@ -391,35 +559,20 @@
 
       recorder = new MediaRecorder(stream, { mimeType: mimeType, audioBitsPerSecond: 96000 });
 
+      /**
+       * MediaRecorder ทำหน้าที่เดียว: เก็บไฟล์เสียงไว้ให้ดาวน์โหลดและอัปโหลดขึ้น Drive
+       * ไม่ได้ใช้ส่งไปถอดเสียงอีกแล้ว เพราะ webm ไม่ใช่รูปแบบที่ Gemini รับ
+       * งานถอดเสียงใช้ท่อน WAV จากตัวดักสัญญาณดิบใน setupAudioProcessing แทน
+       */
       recorder.ondataavailable = function (ev) {
         if (!ev.data || ev.data.size === 0) return;
+        if (!recEnabled) return;
 
-        // ---- เก็บไว้เป็นไฟล์เสมอ แม้ตอนหยุดชั่วคราวก็ยังต้องเก็บลำดับให้ครบ ----
+        // เก็บทุกท่อนตามลำดับ แม้ตอนหยุดชั่วคราว
         // (ข้ามท่อนใดท่อนหนึ่งจะทำให้ไฟล์เสียหาย เพราะสตรีมต้องต่อเนื่อง)
-        if (recEnabled) {
-          recBlobs.push(ev.data);
-          recBytes += ev.data.size;
-          updateRecMeter();
-        }
-
-        // ---- ส่งไปถอดเสียง เฉพาะตอนไม่ได้หยุดชั่วคราวและมีเสียงพอ ----
-        if (paused) return;
-        if (ev.data.size < 1200) return; // ท่อนเล็กเกินไป = แทบไม่มีเสียง
-
-        var reader = new FileReader();
-        reader.onloadend = function () {
-          chunkCount++;
-          el('statChunks').textContent = 'ส่งแล้ว ' + chunkCount + ' ท่อน';
-          post({
-            type: 'summify-bridge-chunk',
-            seq: chunkCount,
-            mimeType: mimeType,
-            dataUrl: reader.result,       // "data:audio/webm;base64,...."
-            durationMs: CHUNK_MS,
-            source: mode
-          });
-        };
-        reader.readAsDataURL(ev.data);
+        recBlobs.push(ev.data);
+        recBytes += ev.data.size;
+        updateRecMeter();
       };
 
       recorder.onerror = function (ev) {
@@ -441,7 +594,7 @@
         recTimer = setInterval(updateRecMeter, 1000);
       }
 
-      setupMeter(stream);
+      setupAudioProcessing(stream);
       el('pickerCard').style.display = 'none';
       el('liveCard').style.display = 'block';
       el('statSource').textContent = 'แหล่งเสียง: ' + sourceLabel;
@@ -491,6 +644,57 @@
     if (!recEnabled) return;
     el('recTime').textContent = fmtClock(recElapsedMs());
     el('recSize').textContent = fmtMB(recBytes);
+  }
+
+  /**
+   * ส่งไฟล์เสียงกลับให้แอปเป็นชิ้นละ 2 MB
+   *
+   * ส่งทีเดียวทั้งก้อนไม่ได้ เพราะ postMessage กับสตริง base64 ขนาด 50 MB
+   * ทำให้เบราว์เซอร์ค้าง แบ่งเป็นชิ้นแล้วทยอยส่งจึงลื่นกว่ามาก
+   * แอปจะประกอบกลับตามลำดับ index แล้วอัปโหลดขึ้น Drive
+   */
+  function sendRecordingToApp(blob, durationSec) {
+    var SLICE = 2 * 1024 * 1024;
+    var total = Math.ceil(blob.size / SLICE);
+
+    post({
+      type: 'summify-bridge-recording-begin',
+      totalSlices: total,
+      totalBytes: blob.size,
+      mimeType: blob.type,
+      durationSec: durationSec
+    });
+
+    var i = 0;
+    function sendNext() {
+      if (i >= total) {
+        post({ type: 'summify-bridge-recording-end', totalSlices: total });
+        return;
+      }
+      if (!opener || opener.closed) return;
+
+      var slice = blob.slice(i * SLICE, Math.min((i + 1) * SLICE, blob.size));
+      var reader = new FileReader();
+      reader.onloadend = function () {
+        post({
+          type: 'summify-bridge-recording-slice',
+          index: i,
+          total: total,
+          dataUrl: reader.result
+        });
+        i++;
+        el('doneInfo').textContent =
+          'ความยาว ' + fmtClock(durationSec * 1000) + ' • ขนาด ' + fmtMB(blob.size) +
+          '\nกำลังส่งไปเก็บใน Drive: ' + i + '/' + total;
+        // เว้นจังหวะเล็กน้อย ไม่ให้เธรดหลักของเบราว์เซอร์ค้าง
+        setTimeout(sendNext, 60);
+      };
+      reader.onerror = function () {
+        post({ type: 'summify-bridge-recording-error', message: 'อ่านชิ้นที่ ' + i + ' ไม่สำเร็จ' });
+      };
+      reader.readAsDataURL(slice);
+    }
+    sendNext();
   }
 
   /** สร้างไฟล์เสียงจากท่อนที่เก็บไว้ */
@@ -557,6 +761,15 @@
     recorder = null;
     analyser = null;
 
+    // ส่งเศษเสียงที่ค้างในบัฟเฟอร์ออกไปก่อนปิด ไม่งั้นคำท้ายๆ จะหาย
+    try { if (pcmFilled > 8000) flushPcmChunk(); } catch (e) {}
+    try {
+      if (pcmNode) { pcmNode.onaudioprocess = null; pcmNode.disconnect(); }
+    } catch (e) {}
+    pcmNode = null;
+    pcmBuffer = [];
+    pcmFilled = 0;
+
     if (recTimer) { clearInterval(recTimer); recTimer = null; }
 
     rawStreams.concat(stream ? [stream] : []).forEach(function (s) {
@@ -577,6 +790,15 @@
   function finishRecording(notify, hadRecorder) {
     var blob = recEnabled ? buildBlob() : null;
     var durationSec = Math.round(recElapsedMs() / 1000);
+
+    // ส่งไฟล์เสียงกลับให้แอปเป็นชิ้นๆ เพื่อเอาไปเก็บใน Drive
+    //
+    // ไฟล์อยู่ในหน้าต่างนี้ (จาก MediaRecorder) ไม่ได้อยู่ที่แอป
+    // เพราะท่อนที่ส่งไปถอดเสียงเป็น WAV ที่ตัดช่วงเงียบออกแล้ว
+    // ใช้ประกอบเป็นไฟล์บันทึกไม่ได้ จังหวะเวลาจะเพี้ยน
+    if (blob && notify && opener && !opener.closed) {
+      sendRecordingToApp(blob, durationSec);
+    }
 
     if (notify) {
       post({
