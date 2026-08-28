@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summify Capture Bridge</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --line: #334155;
+    --text: #f1f5f9; --muted: #94a3b8;
+    --accent: #38bdf8; --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    font-family: "Sarabun", "Noto Sans Thai", system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+  .sources { display: grid; gap: 10px; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; padding: 12px 16px;
+    border: 1px solid var(--line); background: #273449; color: var(--text);
+    text-align: left; transition: border-color .15s, background .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); background: #2d3d55; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button .t { display: block; font-weight: 600; }
+  button .d { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 700; text-align: center; }
+  .danger  { background: #7f1d1d; border-color: #991b1b; text-align: center; font-weight: 700; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  #status { font-size: 14px; padding: 10px 12px; border-radius: 8px; background: #0b1220; border: 1px solid var(--line); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: middle; background: var(--muted); }
+  .dot.live { background: var(--err); animation: pulse 1.2s infinite; }
+  .dot.ok { background: var(--ok); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .meter { height: 6px; border-radius: 3px; background: #0b1220; overflow: hidden; margin-top: 10px; border: 1px solid var(--line); }
+  .meter > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--ok), var(--warn)); transition: width .1s; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .hint b { color: var(--warn); }
+  .stat { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  code { background: #0b1220; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .rec-row {
+    display: flex; align-items: center; gap: 9px;
+    margin-top: 12px; padding: 10px 12px;
+    background: #0b1220; border: 1px solid var(--line); border-radius: 8px;
+    font-size: 13px;
+  }
+  .rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); animation: pulse 1.2s infinite; flex-shrink: 0; }
+  .rec-dot.off { background: var(--muted); animation: none; }
+  .rec-time { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+  .rec-size { color: var(--muted); margin-left: auto; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 12px; cursor: pointer; }
+  .check input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .ok-box { background: #052e26; border: 1px solid var(--ok); border-radius: 10px; padding: 14px; margin-top: 12px; }
+  .ok-box .t { color: var(--ok); font-weight: 600; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<h1>🎙️ Summify Capture Bridge</h1>
+<div class="sub">หน้าต่างนี้ทำหน้าที่รับเสียงแล้วส่งกลับไปยังแอป Summify — กรุณาอย่าปิดระหว่างใช้งาน</div>
+
+<div class="card" id="pickerCard">
+  <div class="label">เลือกแหล่งเสียง</div>
+  <div class="sources">
+    <button id="btnMic">
+      <span class="t">🎤 ไมโครโฟน</span>
+      <span class="d">เสียงพูดในห้อง — เหมาะกับการประชุมแบบเจอตัว</span>
+    </button>
+    <button id="btnSystem">
+      <span class="t">🔊 เสียงจากระบบ / แท็บ</span>
+      <span class="d">เสียงที่ลำโพงกำลังเล่น — วิดีโอ, YouTube, Zoom, Google Meet</span>
+    </button>
+    <button id="btnBoth">
+      <span class="t">🎧 ผสมทั้งสองทาง</span>
+      <span class="d">ไมโครโฟน + เสียงระบบพร้อมกัน — ประชุมออนไลน์ที่คุณพูดด้วย</span>
+    </button>
+  </div>
+  <label class="check">
+    <input type="checkbox" id="optRecord" checked>
+    <span>บันทึกไฟล์เสียงไว้ด้วย (ดาวน์โหลดได้ และเก็บลง Drive อัตโนมัติ)</span>
+  </label>
+
+  <div class="hint" id="pickerHint">
+    เลือก <b>เสียงจากระบบ</b> แล้วในกล่องที่ Chrome เปิดขึ้นมา ให้เลือกแท็บหรือทั้งหน้าจอ
+    แล้ว<b>ติ๊ก "Share tab audio" / "แชร์เสียง"</b> ที่มุมล่างซ้ายด้วย มิฉะนั้นจะไม่ได้ยินเสียง
+  </div>
+</div>
+
+<div class="card" id="liveCard" style="display:none">
+  <div id="status"><span class="dot"></span><span id="statusText">กำลังเตรียม...</span></div>
+  <div class="meter"><i id="meterBar"></i></div>
+  <div class="stat">
+    <span id="statSource">—</span>
+    <span id="statChunks">ส่งแล้ว 0 ท่อน</span>
+  </div>
+
+  <div class="rec-row" id="recRow" style="display:none">
+    <span class="rec-dot" id="recDot"></span>
+    <span>กำลังบันทึก</span>
+    <span class="rec-time" id="recTime">00:00:00</span>
+    <span class="rec-size" id="recSize">0 MB</span>
+  </div>
+
+  <div class="row" style="margin-top:14px">
+    <button id="btnPause">⏸️ หยุดชั่วคราว</button>
+    <button id="btnStop" class="danger">⏹️ หยุดและปิด</button>
+  </div>
+
+  <button id="btnDownloadNow" style="margin-top:10px;width:100%;display:none">
+    ⬇️ ดาวน์โหลดเสียงที่บันทึกไว้ถึงตอนนี้
+  </button>
+</div>
+
+<div class="card" id="doneCard" style="display:none">
+  <div class="ok-box">
+    <div class="t">✓ บันทึกเสียงเรียบร้อย</div>
+    <div id="doneInfo" style="font-size:13px;color:var(--muted)"></div>
+  </div>
+  <button id="btnDownloadFinal" class="primary" style="margin-top:12px;width:100%">
+    ⬇️ ดาวน์โหลดไฟล์เสียง
+  </button>
+  <div class="hint">
+    ไฟล์กำลังถูกส่งไปเก็บใน Google Drive ด้วย ดูได้ที่แท็บ <b>ประวัติ</b> ในแอป<br>
+    ปิดหน้าต่างนี้ได้เมื่อดาวน์โหลดเสร็จแล้ว
+  </div>
+  <button id="btnCloseDone" style="margin-top:10px;width:100%">ปิดหน้าต่าง</button>
+</div>
+
+<div class="card" id="errCard" style="display:none">
+  <div class="label" style="color:var(--err)">เกิดข้อผิดพลาด</div>
+  <div id="errText" style="font-size:14px"></div>
+  <div class="row" style="margin-top:14px">
+    <button id="btnRetry" class="primary">ลองใหม่</button>
+  </div>
+</div>
+
+<script>
+/**
+ * Summify Capture Bridge
+ *
+ * ทำไมต้องมีไฟล์นี้:
+ *   Google Apps Script ครอบหน้าเว็บของเราไว้ใน iframe ซ้อนกันสองชั้น
+ *   (sandboxFrame > userHtmlFrame) และ Google จงใจไม่ใส่ค่า
+ *   allow="microphone; display-capture" ให้ iframe ชั้นนอก
+ *   ผลคือ getUserMedia() และ getDisplayMedia() ถูก Permissions Policy บล็อกทันที
+ *   และเราแก้จากในสคริปต์ของเราเองไม่ได้เลย
+ *
+ *   แต่หน้าต่าง popup ที่ผู้ใช้เป็นคนกดเปิด จะได้สิทธิ์ตาม origin ของตัวเอง
+ *   ไม่ผูกกับข้อจำกัดของ iframe แม่ ไฟล์นี้จึงถูกฝากไว้บน origin แยก
+ *   (เช่น GitHub Pages ซึ่งเป็น HTTPS) แล้วเปิดเป็น popup จากแอป
+ *
+ *   เสียงที่รับได้จะถูกแปลงเป็น base64 แล้วส่งกลับไปให้แอปด้วย postMessage
+ *   ไม่มีการส่งข้อมูลไปที่เซิร์ฟเวอร์อื่น และไม่มี API key อยู่ในไฟล์นี้
+ */
+
+(function () {
+  'use strict';
+
+  var CHUNK_MS = 5000;        // ความยาวท่อนที่ส่งกลับ (มิลลิวินาที)
+  var opener = window.opener;
+  var parentOrigin = null;    // origin ของแอปที่เปิดเรามา ตั้งค่าเมื่อได้ handshake
+  var handshakeDone = false;
+
+  var stream = null;          // MediaStream ที่ใช้จริง
+  var rawStreams = [];        // สตรีมดิบทั้งหมด เก็บไว้เพื่อ stop ตอนจบ
+  var recorder = null;
+  var audioCtx = null;
+  var analyser = null;
+  var chunkCount = 0;
+  var paused = false;
+  var sourceLabel = '';
+
+  /**
+   * การอัดเสียงเก็บไฟล์
+   *
+   * MediaRecorder ที่เรียก start(timeslice) จะคายข้อมูลออกมาเป็นท่อน
+   * โดย "ท่อนแรกเท่านั้นที่มีส่วนหัวของไฟล์" ท่อนถัดๆ ไปเป็นข้อมูลดิบต่อเนื่อง
+   * ดังนั้นถ้าเก็บทุกท่อนไว้ตามลำดับแล้วต่อกันด้วย new Blob([...]) จะได้ไฟล์ที่เล่นได้จริง
+   * เราจึงใช้ตัวอัดตัวเดียวทำสองหน้าที่พร้อมกัน — ส่งไปถอดเสียง และเก็บไว้เป็นไฟล์
+   * ไม่ต้องเปิดตัวอัดซ้อนสองตัวให้เปลืองซีพียู
+   */
+  var recBlobs = [];        // ท่อนทั้งหมดตามลำดับ
+  var recBytes = 0;
+  var recEnabled = true;
+  var recStartedAt = 0;
+  var recPausedMs = 0;      // เวลารวมที่หยุดชั่วคราว จะได้ไม่นับเข้าความยาว
+  var recPauseBegan = 0;
+  var recTimer = null;
+  var finalBlob = null;
+  var finalUrl = null;
+
+  var el = function (id) { return document.getElementById(id); };
+
+  // ---------- handshake ----------
+  // แอปจะส่ง { type: 'summify-bridge-init' } มาให้เรา เพื่อบอก origin ที่จะตอบกลับ
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || typeof d !== 'object') return;
+
+    if (d.type === 'summify-bridge-init') {
+      parentOrigin = ev.origin;
+      handshakeDone = true;
+      if (d.chunkMs && d.chunkMs >= 2000 && d.chunkMs <= 15000) CHUNK_MS = d.chunkMs;
+      post({ type: 'summify-bridge-ready' });
+      return;
+    }
+
+    // แอปสั่งหยุดจากฝั่งโน้น
+    if (d.type === 'summify-bridge-stop' && ev.origin === parentOrigin) {
+      stopAll(true);
+    }
+  });
+
+  function post(msg) {
+    if (!opener || opener.closed) return;
+    try {
+      opener.postMessage(msg, parentOrigin || '*');
+    } catch (e) { /* ไม่ทำอะไร */ }
+  }
+
+  // แจ้งแอปว่าเราเปิดแล้ว (แอปจะตอบกลับด้วย init เพื่อยืนยัน origin)
+  post({ type: 'summify-bridge-hello' });
+
+  // ---------- การรับเสียง ----------
+
+  function showError(msg) {
+    el('pickerCard').style.display = 'none';
+    el('liveCard').style.display = 'none';
+    el('errCard').style.display = 'block';
+    el('errText').textContent = msg;
+    post({ type: 'summify-bridge-error', message: msg });
+  }
+
+  function friendlyError(err) {
+    var name = err && err.name ? err.name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return 'คุณปฏิเสธการเข้าถึงเสียง หรือเบราว์เซอร์บล็อกไว้\n' +
+             'กรุณากด "ลองใหม่" แล้วเลือก "อนุญาต" ในกล่องที่ขึ้นมา';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return 'ไม่พบอุปกรณ์รับเสียง กรุณาตรวจสอบว่าไมโครโฟนเสียบอยู่และระบบมองเห็น';
+    }
+    if (name === 'NotReadableError') {
+      return 'อุปกรณ์เสียงถูกโปรแกรมอื่นใช้งานอยู่ กรุณาปิดโปรแกรมนั้นแล้วลองใหม่';
+    }
+    if (name === 'NotSupportedError') {
+      return 'เบราว์เซอร์นี้ไม่รองรับการรับเสียงระบบ กรุณาใช้ Google Chrome หรือ Microsoft Edge บนคอมพิวเตอร์';
+    }
+    return 'เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : String(err));
+  }
+
+  async function getMicStream() {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1
+      },
+      video: false
+    });
+  }
+
+  /**
+   * รับเสียงที่ระบบกำลังเล่นออกลำโพง (แก้ปัญหาข้อ 2)
+   *
+   * เบราว์เซอร์ไม่มี API ที่ดูดเสียงลำโพงตรงๆ ด้วยเหตุผลด้านความเป็นส่วนตัว
+   * ทางที่ใช้ได้จริงคือ getDisplayMedia แล้วให้ผู้ใช้ติ๊ก "แชร์เสียง"
+   *   - Chrome/Edge บน Windows: แชร์ได้ทั้ง "เสียงทั้งระบบ" (เลือกทั้งหน้าจอ) และ "เสียงแท็บ"
+   *   - Chrome บน macOS: แชร์ได้เฉพาะเสียงของแท็บ (ข้อจำกัดของระบบปฏิบัติการ)
+   * ต้องขอ video: true ด้วย เพราะ Chrome ไม่ยอมให้ขอ audio อย่างเดียว
+   * แต่เราจะทิ้งแทร็กภาพทันทีที่ได้มา ไม่มีการบันทึกภาพหน้าจอใดๆ
+   */
+  async function getSystemStream() {
+    var display = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: 1, height: 1, frameRate: 1 },
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+
+    var audioTracks = display.getAudioTracks();
+    if (!audioTracks.length) {
+      display.getTracks().forEach(function (t) { t.stop(); });
+      throw new Error(
+        'ไม่ได้รับเสียงจากแหล่งที่เลือก\n\n' +
+        'กรุณากด "ลองใหม่" แล้วอย่าลืม "ติ๊กช่อง แชร์เสียง / Share audio" ' +
+        'ที่มุมล่างซ้ายของกล่องเลือกหน้าจอ\n\n' +
+        'บน macOS ให้เลือกที่ "แท็บ Chrome" แทน "ทั้งหน้าจอ" เพราะ macOS ไม่อนุญาตให้แชร์เสียงทั้งระบบ'
+      );
+    }
+
+    // ทิ้งแทร็กภาพทันที เก็บไว้แค่เสียง
+    display.getVideoTracks().forEach(function (t) { t.stop(); });
+
+    rawStreams.push(display);
+    return new MediaStream([audioTracks[0]]);
+  }
+
+  /** ผสมไมโครโฟนกับเสียงระบบเข้าเป็นสตรีมเดียวด้วย Web Audio */
+  async function getMixedStream() {
+    var mic = await getMicStream();
+    rawStreams.push(mic);
+    var sys = await getSystemStream();
+
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var dest = ctx.createMediaStreamDestination();
+
+    var micSrc = ctx.createMediaStreamSource(mic);
+    var micGain = ctx.createGain();
+    micGain.gain.value = 1.0;
+    micSrc.connect(micGain).connect(dest);
+
+    var sysSrc = ctx.createMediaStreamSource(sys);
+    var sysGain = ctx.createGain();
+    sysGain.gain.value = 0.85; // ลดเสียงระบบเล็กน้อย ไม่ให้กลบเสียงพูด
+    sysSrc.connect(sysGain).connect(dest);
+
+    audioCtx = ctx;
+    return dest.stream;
+  }
+
+  function pickMimeType() {
+    var candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4'
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
+    }
+    return '';
+  }
+
+  function setupMeter(s) {
+    try {
+      var ctx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx = ctx;
+      var src = ctx.createMediaStreamSource(s);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      var buf = new Uint8Array(analyser.frequencyBinCount);
+      (function tick() {
+        if (!analyser) return;
+        analyser.getByteFrequencyData(buf);
+        var sum = 0;
+        for (var i = 0; i < buf.length; i++) sum += buf[i];
+        var level = Math.min(100, (sum / buf.length) * 2.2);
+        el('meterBar').style.width = level + '%';
+        requestAnimationFrame(tick);
+      })();
+    } catch (e) { /* มิเตอร์ไม่ขึ้นก็ไม่เป็นไร */ }
+  }
+
+  async function start(mode) {
+    try {
+      if (!navigator.mediaDevices) {
+        throw new Error('เบราว์เซอร์นี้ไม่รองรับการรับเสียง กรุณาใช้ Chrome หรือ Edge บนคอมพิวเตอร์');
+      }
+
+      if (mode === 'mic') {
+        sourceLabel = 'ไมโครโฟน';
+        stream = await getMicStream();
+        rawStreams.push(stream);
+      } else if (mode === 'system') {
+        sourceLabel = 'เสียงจากระบบ / แท็บ';
+        stream = await getSystemStream();
+      } else {
+        sourceLabel = 'ไมโครโฟน + เสียงระบบ';
+        stream = await getMixedStream();
+      }
+
+      var mimeType = pickMimeType();
+      if (!mimeType) throw new Error('เบราว์เซอร์นี้ไม่รองรับ MediaRecorder สำหรับเสียง');
+
+      // ถ้าผู้ใช้กด "หยุดแชร์" จากแถบของ Chrome ให้ปิดให้เรียบร้อย
+      stream.getAudioTracks().forEach(function (t) {
+        t.addEventListener('ended', function () { stopAll(true); });
+      });
+
+      recorder = new MediaRecorder(stream, { mimeType: mimeType, audioBitsPerSecond: 96000 });
+
+      recorder.ondataavailable = function (ev) {
+        if (!ev.data || ev.data.size === 0) return;
+
+        // ---- เก็บไว้เป็นไฟล์เสมอ แม้ตอนหยุดชั่วคราวก็ยังต้องเก็บลำดับให้ครบ ----
+        // (ข้ามท่อนใดท่อนหนึ่งจะทำให้ไฟล์เสียหาย เพราะสตรีมต้องต่อเนื่อง)
+        if (recEnabled) {
+          recBlobs.push(ev.data);
+          recBytes += ev.data.size;
+          updateRecMeter();
+        }
+
+        // ---- ส่งไปถอดเสียง เฉพาะตอนไม่ได้หยุดชั่วคราวและมีเสียงพอ ----
+        if (paused) return;
+        if (ev.data.size < 1200) return; // ท่อนเล็กเกินไป = แทบไม่มีเสียง
+
+        var reader = new FileReader();
+        reader.onloadend = function () {
+          chunkCount++;
+          el('statChunks').textContent = 'ส่งแล้ว ' + chunkCount + ' ท่อน';
+          post({
+            type: 'summify-bridge-chunk',
+            seq: chunkCount,
+            mimeType: mimeType,
+            dataUrl: reader.result,       // "data:audio/webm;base64,...."
+            durationMs: CHUNK_MS,
+            source: mode
+          });
+        };
+        reader.readAsDataURL(ev.data);
+      };
+
+      recorder.onerror = function (ev) {
+        showError('ตัวบันทึกเสียงมีปัญหา: ' + (ev.error ? ev.error.message : 'ไม่ทราบสาเหตุ'));
+      };
+
+      recorder.start(CHUNK_MS);
+
+      // ---- เริ่มจับเวลาการอัด ----
+      recEnabled = el('optRecord').checked;
+      recBlobs = [];
+      recBytes = 0;
+      recPausedMs = 0;
+      recPauseBegan = 0;
+      recStartedAt = Date.now();
+      if (recEnabled) {
+        el('recRow').style.display = 'flex';
+        el('btnDownloadNow').style.display = 'block';
+        recTimer = setInterval(updateRecMeter, 1000);
+      }
+
+      setupMeter(stream);
+      el('pickerCard').style.display = 'none';
+      el('liveCard').style.display = 'block';
+      el('statSource').textContent = 'แหล่งเสียง: ' + sourceLabel;
+      setStatus('live', 'กำลังรับเสียงสด');
+
+      post({
+        type: 'summify-bridge-started',
+        source: mode,
+        mimeType: mimeType,
+        chunkMs: CHUNK_MS,
+        recording: recEnabled
+      });
+
+    } catch (err) {
+      showError(friendlyError(err));
+    }
+  }
+
+  function setStatus(cls, text) {
+    var dot = document.querySelector('#status .dot');
+    dot.className = 'dot' + (cls ? ' ' + cls : '');
+    el('statusText').textContent = text;
+  }
+
+  // ---------- ตัวจับเวลาและขนาดของการอัด ----------
+  function recElapsedMs() {
+    if (!recStartedAt) return 0;
+    var paused = recPausedMs + (recPauseBegan ? (Date.now() - recPauseBegan) : 0);
+    return Math.max(0, Date.now() - recStartedAt - paused);
+  }
+
+  function fmtClock(ms) {
+    var s = Math.floor(ms / 1000);
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var ss = s % 60;
+    var p = function (n) { return ('0' + n).slice(-2); };
+    return p(h) + ':' + p(m) + ':' + p(ss);
+  }
+
+  function fmtMB(bytes) {
+    if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  function updateRecMeter() {
+    if (!recEnabled) return;
+    el('recTime').textContent = fmtClock(recElapsedMs());
+    el('recSize').textContent = fmtMB(recBytes);
+  }
+
+  /** สร้างไฟล์เสียงจากท่อนที่เก็บไว้ */
+  function buildBlob() {
+    if (!recBlobs.length) return null;
+    var type = (recorder && recorder.mimeType) || recBlobs[0].type || 'audio/webm';
+    return new Blob(recBlobs, { type: type });
+  }
+
+  function extFor(mime) {
+    if (!mime) return 'webm';
+    if (mime.indexOf('mp4') >= 0) return 'm4a';
+    if (mime.indexOf('ogg') >= 0) return 'ogg';
+    return 'webm';
+  }
+
+  function suggestedName(blob) {
+    var d = new Date();
+    var p = function (n) { return ('0' + n).slice(-2); };
+    var stamp = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+                '_' + p(d.getHours()) + p(d.getMinutes());
+    return 'บันทึกการประชุม_' + stamp + '.' + extFor(blob.type);
+  }
+
+  /**
+   * ดาวน์โหลดไฟล์ — ทำได้จากหน้านี้เพราะเป็นหน้าต่างระดับบนสุดบน origin ของตัวเอง
+   * (ถ้าทำจากในแอป Apps Script จะถูก sandbox ของ iframe บล็อก)
+   */
+  function downloadBlob(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 4000);
+  }
+
+  el('btnDownloadNow').addEventListener('click', function () {
+    var blob = buildBlob();
+    if (!blob) { alert('ยังไม่มีเสียงที่บันทึกไว้'); return; }
+    downloadBlob(blob, suggestedName(blob));
+  });
+
+  el('btnDownloadFinal').addEventListener('click', function () {
+    if (!finalBlob) { alert('ไม่พบไฟล์เสียง'); return; }
+    downloadBlob(finalBlob, suggestedName(finalBlob));
+  });
+
+  el('btnCloseDone').addEventListener('click', function () { window.close(); });
+
+  function stopAll(notify) {
+    // ขอท่อนสุดท้ายจากตัวอัดก่อนปิด ไม่งั้นเสียงช่วงท้ายจะหาย
+    var hadRecorder = !!recorder;
+    try {
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.requestData();
+        recorder.stop();
+      }
+    } catch (e) {}
+    recorder = null;
+    analyser = null;
+
+    if (recTimer) { clearInterval(recTimer); recTimer = null; }
+
+    rawStreams.concat(stream ? [stream] : []).forEach(function (s) {
+      try { s.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    });
+    rawStreams = [];
+    stream = null;
+
+    try { if (audioCtx) audioCtx.close(); } catch (e) {}
+    audioCtx = null;
+
+    // ให้เวลา ondataavailable ท่อนสุดท้ายทำงานเสร็จก่อน
+    setTimeout(function () {
+      finishRecording(notify, hadRecorder);
+    }, 500);
+  }
+
+  function finishRecording(notify, hadRecorder) {
+    var blob = recEnabled ? buildBlob() : null;
+    var durationSec = Math.round(recElapsedMs() / 1000);
+
+    if (notify) {
+      post({
+        type: 'summify-bridge-stopped',
+        totalChunks: chunkCount,
+        recorded: !!blob,
+        recordedBytes: blob ? blob.size : 0,
+        recordedDurationSec: durationSec,
+        recordedMimeType: blob ? blob.type : ''
+      });
+    }
+
+    if (!blob) {
+      // ไม่ได้อัดไว้ ปิดหน้าต่างได้เลย
+      setTimeout(function () { window.close(); }, 250);
+      return;
+    }
+
+    // มีไฟล์เสียง — ค้างหน้าต่างไว้ให้ผู้ใช้กดดาวน์โหลด และทยอยส่งให้แอปเก็บลง Drive
+    finalBlob = blob;
+    el('liveCard').style.display = 'none';
+    el('pickerCard').style.display = 'none';
+    el('errCard').style.display = 'none';
+    el('doneCard').style.display = 'block';
+    el('doneInfo').textContent =
+      'ความยาว ' + fmtClock(durationSec * 1000) + ' • ขนาด ' + fmtMB(blob.size);
+
+    document.title = 'บันทึกเสร็จ — Summify';
+  }
+
+  // ---------- ปุ่มต่างๆ ----------
+  el('btnMic').addEventListener('click', function () { start('mic'); });
+  el('btnSystem').addEventListener('click', function () { start('system'); });
+  el('btnBoth').addEventListener('click', function () { start('both'); });
+
+  el('btnPause').addEventListener('click', function () {
+    paused = !paused;
+    el('btnPause').textContent = paused ? '▶️ ทำต่อ' : '⏸️ หยุดชั่วคราว';
+    setStatus(paused ? 'ok' : 'live', paused ? 'หยุดชั่วคราว' : 'กำลังรับเสียงสด');
+
+    // หยุดชั่วคราว = หยุดส่งไปแปล แต่ยังอัดต่อ (ตัดตรงกลางจะทำให้ไฟล์เสีย)
+    // จึงหักเวลาที่หยุดออกจากตัวจับเวลา เพื่อให้ตัวเลขตรงกับสิ่งที่ผู้ใช้เข้าใจ
+    if (paused) {
+      recPauseBegan = Date.now();
+      el('recDot').classList.add('off');
+    } else {
+      if (recPauseBegan) recPausedMs += Date.now() - recPauseBegan;
+      recPauseBegan = 0;
+      el('recDot').classList.remove('off');
+    }
+
+    post({ type: 'summify-bridge-paused', paused: paused });
+  });
+
+  el('btnStop').addEventListener('click', function () { stopAll(true); });
+  el('btnRetry').addEventListener('click', function () {
+    el('errCard').style.display = 'none';
+    el('pickerCard').style.display = 'block';
+  });
+
+  // เตือนก่อนปิดหน้าต่างทิ้งทั้งที่ยังอัดอยู่ หรือยังไม่ได้ดาวน์โหลดไฟล์
+  window.addEventListener('beforeunload', function (e) {
+    var stillRecording = recEnabled && recBlobs.length && recorder;
+    var notDownloaded = finalBlob && !finalBlob.__downloaded;
+    if (stillRecording || notDownloaded) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+    post({ type: 'summify-bridge-stopped', totalChunks: chunkCount });
+  });
+
+  // ถ้าแอปแม่ปิดไปก่อน ให้หยุดอัด แต่ไม่ปิดหน้าต่างทิ้ง
+  // ผู้ใช้จะได้ยังกดดาวน์โหลดไฟล์เสียงที่อัดไว้ได้ ไม่เสียของ
+  setInterval(function () {
+    if ((!opener || opener.closed) && recorder) {
+      stopAll(false);
+    }
+  }, 3000);
+})();
+</script>
+</body>
+</html>
